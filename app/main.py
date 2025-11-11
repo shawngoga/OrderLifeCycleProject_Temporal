@@ -42,9 +42,9 @@ async def start_temporal_and_workers():
         logger.info("Launching Temporal server...")
         subprocess.Popen([
             "powershell", "-Command",
-            f"Start-Process powershell -WindowStyle Normal -ArgumentList 'cd \"{os.getcwd()}\"; .\\.venv\\Scripts\\Activate.ps1; & \"{temporal_path}\" server start-dev; Read-Host'"
+            f"Start-Process -FilePath \"{temporal_path}\" -ArgumentList 'server start-dev' -WindowStyle Normal"
         ])
-        
+
         logger.info("Waiting for Temporal server to be ready...")
         ready = await wait_for_temporal()
         if not ready:
@@ -65,6 +65,7 @@ async def start_temporal_and_workers():
         return {"status": "Temporal server and workers started"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Startup failed: {str(e)}")
+
 
 def require_temporal():
     if app.state.client is None:
