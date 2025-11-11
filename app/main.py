@@ -37,11 +37,14 @@ async def wait_for_temporal(host="localhost", port=7233, timeout=30):
 @app.post("/start-server", tags=["System"])
 async def start_temporal_and_workers():
     try:
+        temporal_path = os.path.expanduser("~\\.temporal\\temporal.exe")
+
         logger.info("Launching Temporal server...")
         subprocess.Popen([
             "powershell", "-Command",
-            f"Start-Process powershell -WindowStyle Normal -ArgumentList 'cd \"{os.getcwd()}\"; .\\.venv\\Scripts\\Activate.ps1; temporal server start-dev; Read-Host'"
+            f"Start-Process powershell -WindowStyle Normal -ArgumentList 'cd \"{os.getcwd()}\"; .\\.venv\\Scripts\\Activate.ps1; & \"{temporal_path}\" server start-dev; Read-Host'"
         ])
+        
         logger.info("Waiting for Temporal server to be ready...")
         ready = await wait_for_temporal()
         if not ready:

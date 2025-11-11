@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # OrderLifecycleProject_Temporal
 
 This project implements a reproducible, event-driven order lifecycle system using Temporal workflows, FastAPI, and SQLAlchemy. It is designed for local development on Windows using PowerShell and Python, with strict boundaries, audit-friendly logging, and manual environment setup (no Docker).
@@ -102,3 +103,7 @@ README.md
 - Strict separation of concerns and task queues  
 - Unit and integration tests for all major components
 
+=======
+# OrderLifeCycleProject_Temporal
+This project simulates an order life cycle. From order reception all the way to shipping, this project leverages temporal to demostrate handling of unexpected errors while maintain workflow integrity and completion with an acceptable time frame. 
+>>>>>>> 07c31b5cbcf9ceecd7e30864613abd33e3f30021
