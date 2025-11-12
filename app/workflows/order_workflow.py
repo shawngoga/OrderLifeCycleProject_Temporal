@@ -1,5 +1,5 @@
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Optional
 from app.types.order_types import Address, Item, OrderData
 from temporalio import workflow
@@ -24,12 +24,12 @@ logging.getLogger("temporalio.worker._workflow_instance").setLevel(logging.ERROR
 logger = logging.getLogger("order-worker")
 
 FAST_RETRY_POLICY = RetryPolicy(
-    maximum_attempts=100,
     initial_interval=timedelta(milliseconds=100),
     backoff_coefficient=1.0,
     maximum_interval=timedelta(milliseconds=100),
+    maximum_attempts=300,
+    non_retryable_error_types=["PaymentAlreadyExistsError","OrderAlreadyExistsError"]
 )
-
 @workflow.defn
 class OrderWorkflow:
     def __init__(self):
@@ -77,6 +77,8 @@ class OrderWorkflow:
             address=Address(**address),
             items=[Item(**item) for item in items]
         )
+        
+        self._start_time: Optional[datetime] = workflow.now()
 
         await workflow.sleep(0.001)
 
@@ -145,6 +147,9 @@ class OrderWorkflow:
 
         if result := await self.check_signal_result():
             return result
-
+    
         logger.info(f"[OrderWorkflow] COMPLETED — {order_id}")
+        now = workflow.now()  # deterministic "current time" in workflow
+        elapsed = (now - self._start_time).total_seconds()
+        logger.info(f"Order {order_id} processed in {elapsed} seconds")
         return f"Order {order_id} completed"

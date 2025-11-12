@@ -13,6 +13,8 @@ logging.getLogger("temporalio.activity").setLevel(logging.ERROR)
 logging.getLogger("temporalio.worker._workflow_instance").setLevel(logging.ERROR)
 logger = logging.getLogger("stub")
 
+
+
 async def flaky_call() -> None:
     import random
     rand_num = random.random()
@@ -21,11 +23,19 @@ async def flaky_call() -> None:
     if rand_num < 0.67:
         await asyncio.sleep(300)
 
+# app/stubs/function_stubs.py (showing only updated bodies for relevant stubs)
+
+import asyncio
+from typing import Dict, Any
+from app.activities.hedge_state import hedge_id_map, elect_hedge_winner
+
 async def order_received(order_id: str) -> Dict[str, Any]:
+    hedge_id = hedge_id_map.get(asyncio.current_task())
     try:
-        logger.info(f"[Stub] order_received: flaky_call starting")
+        
         await flaky_call()
-        logger.info(f"[Stub] order_received: flaky_call completed")
+        if not await elect_hedge_winner(hedge_id, order_id, logger):
+            return {"order_id": order_id, "items": []}
 
         from datetime import datetime
         with SessionLocal() as db:
@@ -48,17 +58,26 @@ async def order_received(order_id: str) -> Dict[str, Any]:
                 ts=datetime.utcnow()
             ))
             db.commit()
-        logger.info(f"[Stub] order_received: {order_id}")
+
+        logger.info(f"[Stub] order_received hedge {hedge_id} succeeded for {order_id}")
         return {"order_id": order_id, "items": [{"sku": "ABC", "qty": 1}]}
+    except asyncio.CancelledError:
+        logger.info(f"[Hedge] hedge {hedge_id} canceled during execution for order {order_id}")
+        raise
     except Exception as e:
-        logger.error(f"[Stub] order_received error: {order_id} — {str(e)}")
+        logger.error(f"[Stub] order_received hedge {hedge_id} error: {order_id} — {str(e)}")
         raise
 
+
 async def order_validated(order: Dict[str, Any]) -> bool:
+    hedge_id = hedge_id_map.get(asyncio.current_task())
     try:
-        logger.info(f"[Stub] order_validated: flaky_call starting")
+        logger.info(f"[Stub] order_validated hedge {hedge_id}: flaky_call starting")
         await flaky_call()
-        logger.info(f"[Stub] order_validated: flaky_call completed")
+        logger.info(f"[Stub] order_validated hedge {hedge_id}: flaky_call completed")
+
+        if not await elect_hedge_winner(hedge_id, order["order_id"], logger):
+            return False
 
         from datetime import datetime
         with SessionLocal() as db:
@@ -78,17 +97,26 @@ async def order_validated(order: Dict[str, Any]) -> bool:
 
         if not order.get("items"):
             raise ValueError("No items to validate")
-        logger.info(f"[Stub] order_validated: {order['order_id']}")
+
+        logger.info(f"[Stub] order_validated hedge {hedge_id} succeeded: {order['order_id']}")
         return True
+    except asyncio.CancelledError:
+        logger.info(f"[Hedge] hedge {hedge_id} canceled during execution for order {order['order_id']}")
+        raise
     except Exception as e:
-        logger.error(f"[Stub] order_validated error: {order['order_id']} — {str(e)}")
+        logger.error(f"[Stub] order_validated hedge {hedge_id} error: {order['order_id']} — {str(e)}")
         raise
 
+
 async def payment_charged(order: Dict[str, Any], payment_id: str, db) -> Dict[str, Any]:
+    hedge_id = hedge_id_map.get(asyncio.current_task())
     try:
-        logger.info(f"[Stub] payment_charged: flaky_call starting")
+        logger.info(f"[Stub] payment_charged hedge {hedge_id}: flaky_call starting")
         await flaky_call()
-        logger.info(f"[Stub] payment_charged: flaky_call completed")
+        logger.info(f"[Stub] payment_charged hedge {hedge_id}: flaky_call completed")
+
+        if not await elect_hedge_winner(hedge_id, order["order_id"], logger):
+            return {"status": "canceled", "amount": 0}
 
         from datetime import datetime
         import random
@@ -118,17 +146,26 @@ async def payment_charged(order: Dict[str, Any], payment_id: str, db) -> Dict[st
             ts=datetime.utcnow()
         ))
         db.commit()
-        logger.info(f"[Stub] payment_charged: {order['order_id']} — ${amount}")
+
+        logger.info(f"[Stub] payment_charged hedge {hedge_id} succeeded: {order['order_id']} — ${amount}")
         return {"status": "charged", "amount": amount}
+    except asyncio.CancelledError:
+        logger.info(f"[Hedge] hedge {hedge_id} canceled during execution for order {order['order_id']}")
+        raise
     except Exception as e:
-        logger.error(f"[Stub] payment_charged error: {order['order_id']} — {str(e)}")
+        logger.error(f"[Stub] payment_charged hedge {hedge_id} error: {order['order_id']} — {str(e)}")
         raise
 
 async def order_shipped(order: Dict[str, Any]) -> str:
+    hedge_id = hedge_id_map.get(asyncio.current_task())
     try:
-        logger.info(f"[Stub] order_shipped: flaky_call starting")
+        logger.info(f"[Stub] order_shipped hedge {hedge_id}: flaky_call starting")
         await flaky_call()
-        logger.info(f"[Stub] order_shipped: flaky_call completed")
+        logger.info(f"[Stub] order_shipped hedge {hedge_id}: flaky_call completed")
+
+        if not await elect_hedge_winner(hedge_id, order["order_id"], logger):
+            # loser sentinel consistent with earlier stubs
+            return ""  
 
         from datetime import datetime
         with SessionLocal() as db:
@@ -145,17 +182,26 @@ async def order_shipped(order: Dict[str, Any]) -> str:
                 ts=datetime.utcnow()
             ))
             db.commit()
-        logger.info(f"[Stub] order_shipped: {order['order_id']}")
+
+        logger.info(f"[Stub] order_shipped hedge {hedge_id} succeeded: {order['order_id']}")
         return "Shipped"
+    except asyncio.CancelledError:
+        logger.info(f"[Hedge] hedge {hedge_id} canceled during execution for order {order['order_id']}")
+        raise
     except Exception as e:
-        logger.error(f"[Stub] order_shipped error: {order['order_id']} — {str(e)}")
+        logger.error(f"[Stub] order_shipped hedge {hedge_id} error: {order['order_id']} — {str(e)}")
         raise
 
+
 async def package_prepared(order: Dict[str, Any]) -> str:
+    hedge_id = hedge_id_map.get(asyncio.current_task())
     try:
-        logger.info(f"[Stub] package_prepared: flaky_call starting")
+        logger.info(f"[Stub] package_prepared hedge {hedge_id}: flaky_call starting")
         await flaky_call()
-        logger.info(f"[Stub] package_prepared: flaky_call completed")
+        logger.info(f"[Stub] package_prepared hedge {hedge_id}: flaky_call completed")
+
+        if not await elect_hedge_winner(hedge_id, order["order_id"], logger):
+            return ""  
 
         from datetime import datetime
         with SessionLocal() as db:
@@ -172,17 +218,26 @@ async def package_prepared(order: Dict[str, Any]) -> str:
                 ts=datetime.utcnow()
             ))
             db.commit()
-        logger.info(f"[Stub] package_prepared: {order['order_id']}")
+
+        logger.info(f"[Stub] package_prepared hedge {hedge_id} succeeded: {order['order_id']}")
         return "Package ready"
+    except asyncio.CancelledError:
+        logger.info(f"[Hedge] hedge {hedge_id} canceled during execution for order {order['order_id']}")
+        raise
     except Exception as e:
-        logger.error(f"[Stub] package_prepared error: {order['order_id']} — {str(e)}")
+        logger.error(f"[Stub] package_prepared hedge {hedge_id} error: {order['order_id']} — {str(e)}")
         raise
 
+
 async def carrier_dispatched(order: Dict[str, Any]) -> str:
+    hedge_id = hedge_id_map.get(asyncio.current_task())
     try:
-        logger.info(f"[Stub] carrier_dispatched: flaky_call starting")
+        logger.info(f"[Stub] carrier_dispatched hedge {hedge_id}: flaky_call starting")
         await flaky_call()
-        logger.info(f"[Stub] carrier_dispatched: flaky_call completed")
+        logger.info(f"[Stub] carrier_dispatched hedge {hedge_id}: flaky_call completed")
+
+        if not await elect_hedge_winner(hedge_id, order["order_id"], logger):
+            return ""  
 
         from datetime import datetime
         with SessionLocal() as db:
@@ -199,8 +254,12 @@ async def carrier_dispatched(order: Dict[str, Any]) -> str:
                 ts=datetime.utcnow()
             ))
             db.commit()
-        logger.info(f"[Stub] carrier_dispatched: {order['order_id']}")
+
+        logger.info(f"[Stub] carrier_dispatched hedge {hedge_id} succeeded: {order['order_id']}")
         return "Dispatched"
+    except asyncio.CancelledError:
+        logger.info(f"[Hedge] hedge {hedge_id} canceled during execution for order {order['order_id']}")
+        raise
     except Exception as e:
-        logger.error(f"[Stub] carrier_dispatched error: {order['order_id']} — {str(e)}")
+        logger.error(f"[Stub] carrier_dispatched hedge {hedge_id} error: {order['order_id']} — {str(e)}")
         raise

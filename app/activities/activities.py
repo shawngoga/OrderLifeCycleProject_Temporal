@@ -2,6 +2,7 @@ import logging
 import asyncio
 from datetime import timedelta
 from temporalio import activity
+from temporalio.common import RetryPolicy
 from app.types.order_types import OrderData
 from app.stubs.function_stubs import (
     order_received as stub_order_received,
@@ -11,21 +12,24 @@ from app.stubs.function_stubs import (
     package_prepared as stub_package_prepared,
     carrier_dispatched as stub_carrier_dispatched,
 )
+# Import hedge coordination helpers
+from app.activities.hedge_state import reset_hedge_state, run_with_hedges
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
-logging.getLogger("temporalio").setLevel(logging.INFO)
 logger = logging.getLogger("activity")
+logging.getLogger("temporalio").setLevel(logging.INFO)
 logging.getLogger("temporalio.activity").setLevel(logging.INFO)
 logging.getLogger("temporalio.worker._workflow_instance").setLevel(logging.ERROR)
 
-FAST_RETRY_POLICY = {
-    "initial_interval": timedelta(milliseconds=100),
-    "backoff_coefficient": 1.0,
-    "maximum_interval": timedelta(milliseconds=100),
-}
+FAST_RETRY_POLICY = RetryPolicy(
+    initial_interval=timedelta(milliseconds=100),
+    backoff_coefficient=1.0,
+    maximum_interval=timedelta(milliseconds=100),
+    maximum_attempts=10,
+)
 
 def log_event(db, order_id: str, event_type: str, payload: dict = None, ts=None) -> None:
     from datetime import datetime
@@ -37,6 +41,10 @@ def log_event(db, order_id: str, event_type: str, payload: dict = None, ts=None)
         ts=ts or datetime.utcnow()
     ))
 
+# -------------------------------
+# Hedge-enabled activities
+# -------------------------------
+
 @activity.defn
 async def activity_order_received(order: "OrderData") -> dict:
     from datetime import datetime
@@ -46,15 +54,14 @@ async def activity_order_received(order: "OrderData") -> dict:
     attempt = activity.info().attempt
     logger.info(f"[Activity] order_received attempt {attempt}: {order.order_id}")
 
+    reset_hedge_state()
     try:
-        result = await asyncio.wait_for(stub_order_received(order.order_id), timeout=0.00000001)
-    except asyncio.TimeoutError:
-        logger.warning(f"[Activity] order_received timeout: {order.order_id}")
-        raise
+        result = await run_with_hedges(stub_order_received, order.order_id)
     except Exception as e:
-        logger.error(f"[Activity] order_received error: {order.order_id} — {str(e)}")
+        logger.error(f"[Activity] order_received error: {order.order_id} — {e}")
         raise
 
+    # Update address after hedge election
     with SessionLocal() as db:
         db_order = db.query(Order).filter(Order.id == order.order_id).first()
         if db_order:
@@ -73,25 +80,20 @@ async def activity_order_received(order: "OrderData") -> dict:
             logger.info(f"[Activity] address_set: {order.order_id}")
     return result
 
+
 @activity.defn
 async def activity_order_validated(order: dict) -> None:
     attempt = activity.info().attempt
     logger.info(f"[Activity] order_validated attempt {attempt}: {order['order_id']}")
 
+    reset_hedge_state()
     try:
-        await asyncio.wait_for(stub_order_validated(order), timeout=0.00000001)
-    except asyncio.TimeoutError:
-        logger.warning(f"[Activity] order_validated timeout: {order['order_id']}")
-        raise
+        await run_with_hedges(stub_order_validated, order)
+        logger.info(f"[Activity] order_validated succeeded: {order['order_id']}")
     except Exception as e:
-        logger.error(f"[Activity] order_validated error: {order['order_id']} — {str(e)}")
+        logger.error(f"[Activity] order_validated error: {order['order_id']} — {e}")
         raise
 
-@activity.defn
-async def activity_manual_review(order: dict) -> None:
-    logger.info(f"[Activity] manual_review started: {order['order_id']}")
-    await asyncio.sleep(2)
-    logger.info(f"[Activity] manual_review completed: {order['order_id']}")
 
 @activity.defn
 async def activity_payment_charged(order: dict, payment_id: str) -> dict:
@@ -99,49 +101,74 @@ async def activity_payment_charged(order: dict, payment_id: str) -> dict:
     attempt = activity.info().attempt
     logger.info(f"[Activity] payment_charged attempt {attempt}: {order['order_id']}")
 
+    reset_hedge_state()
     try:
         with SessionLocal() as db:
-            result = await asyncio.wait_for(
-                stub_payment_charged(order, payment_id, db),
-                timeout=0.00000001
-            )
+            result = await run_with_hedges(stub_payment_charged, order, payment_id, db)
+        logger.info(f"[Activity] payment_charged succeeded: {order['order_id']}")
         return result
-    except asyncio.TimeoutError:
-        logger.warning(f"[Activity] payment_charged timeout: {order['order_id']}")
-        raise
     except Exception as e:
-        logger.error(f"[Activity] payment_charged error: {order['order_id']} — {str(e)}")
+        logger.error(f"[Activity] payment_charged error: {order['order_id']} — {e}")
         raise
+
 
 @activity.defn
 async def activity_package_prepared(order: dict) -> str:
     attempt = activity.info().attempt
     logger.info(f"[Activity] package_prepared attempt {attempt}: {order['order_id']}")
+
+    reset_hedge_state()
     try:
-        return await stub_package_prepared(order)
+        result = await run_with_hedges(stub_package_prepared, order)
+        logger.info(f"[Activity] package_prepared succeeded: {order['order_id']}")
+        return result
     except Exception as e:
         logger.error(f"[Activity] package_prepared error: {order['order_id']} — {e}")
         raise
+
 
 @activity.defn
 async def activity_carrier_dispatched(order: dict) -> str:
     attempt = activity.info().attempt
     logger.info(f"[Activity] carrier_dispatched attempt {attempt}: {order['order_id']}")
+
+    reset_hedge_state()
     try:
-        return await stub_carrier_dispatched(order)
+        result = await run_with_hedges(stub_carrier_dispatched, order)
+        logger.info(f"[Activity] carrier_dispatched succeeded: {order['order_id']}")
+        return result
     except Exception as e:
         logger.error(f"[Activity] carrier_dispatched error: {order['order_id']} — {e}")
         raise
 
+
 @activity.defn
 async def activity_order_shipped(order: dict) -> str:
     attempt = activity.info().attempt
-    logger.info(f"[Activity] order_shipping attempt {attempt}: {order['order_id']}")
+    logger.info(f"[Activity] order_shipped attempt {attempt}: {order['order_id']}")
+
+    reset_hedge_state()
     try:
-        return await stub_order_shipped(order)
+        result = await run_with_hedges(stub_order_shipped, order)
+        logger.info(f"[Activity] order_shipped succeeded: {order['order_id']}")
+        return result
     except Exception as e:
-        logger.error(f"[Activity] order_shipping error: {order['order_id']} — {e}")
+        logger.error(f"[Activity] order_shipped error: {order['order_id']} — {e}")
         raise
+
+
+
+# -------------------------------
+# Other activities unchanged
+# -------------------------------
+
+@activity.defn
+async def activity_manual_review(order: dict) -> None:
+    logger.info(f"[Activity] manual_review started: {order['order_id']}")
+    logger.info(f"Reviewing order {order['order_id']} ...")
+    logger.info("Simulating manual review delay...")
+    await asyncio.sleep(2)
+    logger.info(f"[Activity] manual_review completed: {order['order_id']}")
 
 @activity.defn
 async def activity_cancel_order(order: dict) -> str:
@@ -160,6 +187,7 @@ async def activity_cancel_order(order: dict) -> str:
             return f"Order {order['order_id']} marked as canceled"
         logger.warning(f"[Activity] cancel_order failed: {order['order_id']} not found")
         return f"Order {order['order_id']} not found"
+
 
 @activity.defn
 async def activity_refund_payment(order: dict, reason: str) -> str:
