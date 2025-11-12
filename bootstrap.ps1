@@ -74,32 +74,86 @@ if (Test-Path "requirements.txt") {
 }
 
 # ----------------------------------------
-# Temporal CLI Setup
+# Temporal CLI Setup (fixed for ZIP asset)
 # ----------------------------------------
 
 $temporalInstallDir = "$env:USERPROFILE\.temporal"
-$temporalExe = "$temporalInstallDir\temporal.exe"
+$temporalExe        = Join-Path $temporalInstallDir "temporal.exe"
+$temporalZip        = Join-Path $temporalInstallDir "temporal_windows_amd64.zip"
+$downloadUri        = "https://github.com/temporalio/cli/releases/latest/download/temporal_windows_amd64.zip"
 
-if (Get-Command temporal -ErrorAction SilentlyContinue) {
-    Write-Host "Temporal CLI is available in PATH."
-} elseif (Test-Path $temporalExe) {
-    Write-Host "Temporal CLI found at $temporalExe. Adding to PATH temporarily..."
-    $env:Path += ";$temporalInstallDir"
-} else {
-    Write-Host "Temporal CLI not found. Downloading to $temporalInstallDir..."
+function Test-ExeHeader([string]$path) {
+    if (-not (Test-Path $path)) { return $false }
     try {
-        New-Item -ItemType Directory -Force -Path $temporalInstallDir | Out-Null
-        Invoke-WebRequest -Uri "https://github.com/temporalio/cli/releases/latest/download/temporal_windows_amd64.exe" `
-                          -OutFile $temporalExe
-        if (Test-Path $temporalExe) {
-            Write-Host "Temporal CLI downloaded successfully."
-            $env:Path += ";$temporalInstallDir"
-        } else {
-            Write-Host "Download completed but executable not found. Please verify manually."
+        $fs = [System.IO.File]::OpenRead($path)
+        try {
+            $b0 = $fs.ReadByte(); $b1 = $fs.ReadByte()
+            return ($b0 -eq 0x4D -and $b1 -eq 0x5A) # "MZ"
+        } finally { $fs.Dispose() }
+    } catch { return $false }
+}
+
+# If temporal.exe already valid, just use it
+if (Test-ExeHeader $temporalExe) {
+    Write-Host "Temporal CLI already present at $temporalExe"
+    if ($env:Path -notmatch [regex]::Escape($temporalInstallDir)) {
+        $env:Path += ";$temporalInstallDir"
+    }
+}
+else {
+    Write-Host "Temporal CLI not found or invalid. Installing to $temporalInstallDir ..."
+
+    # Ensure folder exists and clean any bad leftovers
+    New-Item -ItemType Directory -Force -Path $temporalInstallDir | Out-Null
+    if (Test-Path $temporalExe) { Remove-Item $temporalExe -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $temporalZip) { Remove-Item $temporalZip -Force -ErrorAction SilentlyContinue }
+
+    # Harden TLS just in case
+    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+
+    try {
+        Write-Host "Downloading: $downloadUri"
+        Invoke-WebRequest -Uri $downloadUri -OutFile $temporalZip -UseBasicParsing -ErrorAction Stop
+
+        if (-not (Test-Path $temporalZip)) {
+            Write-Host "Download failed: $temporalZip not found."
             exit 1
         }
-    } catch {
-        Write-Host "Failed to download Temporal CLI. Check your internet connection or permissions."
+
+        Write-Host "Extracting to $temporalInstallDir ..."
+        Expand-Archive -Path $temporalZip -DestinationPath $temporalInstallDir -Force
+
+        # Some zips extract into a subfolder; try to locate the exe
+        if (-not (Test-Path $temporalExe)) {
+            $found = Get-ChildItem $temporalInstallDir -Recurse -Filter "temporal.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) {
+                Move-Item -Force $found.FullName $temporalExe
+            }
+        }
+
+        # Cleanup zip
+        Remove-Item $temporalZip -Force -ErrorAction SilentlyContinue
+
+        if (-not (Test-ExeHeader $temporalExe)) {
+            Write-Host "Install failed: temporal.exe missing or invalid after extraction."
+            exit 1
+        }
+
+        Write-Host "Temporal CLI installed successfully at $temporalExe"
+        if ($env:Path -notmatch [regex]::Escape($temporalInstallDir)) {
+            $env:Path += ";$temporalInstallDir"
+        }
+    }
+    catch {
+        Write-Host "Failed to install Temporal CLI: $($_.Exception.Message)"
         exit 1
     }
+}
+
+# Optional: quick version check
+try {
+    & $temporalExe --version
+} catch {
+    Write-Host "Temporal CLI present but not runnable: $($_.Exception.Message)"
+    exit 1
 }
