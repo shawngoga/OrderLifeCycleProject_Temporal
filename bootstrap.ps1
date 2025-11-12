@@ -1,159 +1,216 @@
 # ----------------------------------------
-# Setup script for OrderLifecycleProject_Temporal
-# Run this from an Administrator PowerShell session
+# Bootstrap: cross-machine Windows setup
+# ----------------------------------------
+# Safe to run multiple times. Designed for Admin PowerShell.
+# Installs: Chocolatey (if missing), Python, make, Temporal CLI (or Docker fallback)
+# Sets up .venv and installs requirements.txt
 # ----------------------------------------
 
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process -Force
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'     # cleaner output
+[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls13
 
-# Check for Chocolatey
-$chocoPath = "C:\ProgramData\chocolatey\bin\choco.exe"
+# 0) Helpers
+function Write-Step($msg){ Write-Host "`n=== $msg ===" -ForegroundColor Cyan }
+function In-Path([string]$p){ (($env:Path -split ';') -contains $p) }
+function Ensure-Path([string]$p){ if (-not (In-Path $p)) { $env:Path = "$env:Path;$p" } }
+function Test-ExeHeader([string]$path){
+  if (-not (Test-Path $path)) { return $false }
+  try {
+    $fs=[System.IO.File]::OpenRead($path); try {
+      $b0=$fs.ReadByte(); $b1=$fs.ReadByte(); return ($b0 -eq 0x4D -and $b1 -eq 0x5A) # "MZ"
+    } finally { $fs.Dispose() }
+  } catch { return $false }
+}
+function Test-Admin(){
+  $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+  $p  = New-Object Security.Principal.WindowsPrincipal($id)
+  return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+if (-not (Test-Admin)) {
+  Write-Host "⚠️  Please run this script in an **Administrator** PowerShell window." -ForegroundColor Yellow
+  exit 1
+}
+
+# Allow script for this session only
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned -Force | Out-Null
+
+# 1) Chocolatey
+Write-Step "Checking Chocolatey"
+$chocoBin = "C:\ProgramData\chocolatey\bin"
+$chocoExe = Join-Path $chocoBin "choco.exe"
 if (Get-Command choco -ErrorAction SilentlyContinue) {
-    Write-Host "Chocolatey is available in PATH."
-} elseif (Test-Path $chocoPath) {
-    Write-Host "Chocolatey found but not in PATH. Adding temporarily..."
-    $env:Path += ";C:\ProgramData\chocolatey\bin"
+  Write-Host "Chocolatey is available in PATH."
+} elseif (Test-Path $chocoExe) {
+  Write-Host "Chocolatey exists but not in PATH. Adding for this session."
+  Ensure-Path $chocoBin
 } else {
-    Write-Host "Installing Chocolatey..."
-    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-    try {
-        iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-        $env:Path += ";C:\ProgramData\chocolatey\bin"
-    } catch {
-        Write-Host "Chocolatey installation failed. Check your internet connection or permissions."
-        exit 1
+  Write-Host "Installing Chocolatey..."
+  try {
+    Set-ExecutionPolicy Bypass -Scope Process -Force
+    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls13
+    Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+    Ensure-Path $chocoBin
+  } catch {
+    Write-Host "❌ Chocolatey installation failed: $($_.Exception.Message)"
+    throw
+  }
+}
+
+# 2) Python (install if missing)
+Write-Step "Checking Python"
+if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+  Write-Host "Python not found. Installing via Chocolatey..."
+  choco install python -y --no-progress
+  $pyUser = "$env:LOCALAPPDATA\Programs\Python\Python*\"
+  if (Test-Path $pyUser) {
+    Get-ChildItem $pyUser -Directory | Sort-Object Name -Descending | Select-Object -First 1 | ForEach-Object {
+      Ensure-Path $_.FullName
+      Ensure-Path (Join-Path $_.FullName "Scripts")
     }
-}
-
-# Check for make
-$makePath = "$env:ChocolateyInstall\bin"
-if (Get-Command make -ErrorAction SilentlyContinue) {
-    Write-Host "make is available in PATH."
-} elseif (Test-Path "$makePath\make.exe") {
-    Write-Host "make found but not in PATH. Adding temporarily..."
-    $env:Path += ";$makePath"
+  }
 } else {
-    Write-Host "Installing make..."
-    try {
-        choco install make -y
-    } catch {
-        Write-Host "make installation failed. Check Chocolatey setup or permissions."
-        exit 1
-    }
+  Write-Host "Python found: $(python --version)"
 }
 
-# Add make to system PATH if missing
-$systemPath = [Environment]::GetEnvironmentVariable("Path", "Machine")
-if (-not ($systemPath -split ";" | Where-Object { $_ -eq $makePath })) {
-    Write-Host "Adding make to system PATH permanently..."
-    $newPath = "$systemPath;$makePath"
-    [Environment]::SetEnvironmentVariable("Path", $newPath, "Machine")
-    Write-Host "PATH updated. Restart PowerShell to apply changes."
+# 3) Make (install if missing)
+Write-Step "Checking make"
+if (-not (Get-Command make -ErrorAction SilentlyContinue)) {
+  Write-Host "Installing make via Chocolatey..."
+  choco install make -y --no-progress
+  Ensure-Path "$env:ChocolateyInstall\bin"
 } else {
-    Write-Host "make already in system PATH."
+  Write-Host "make found."
 }
 
-# Create virtual environment
-if (Test-Path ".venv") {
-    Write-Host "Virtual environment already exists."
+# 4) Project virtual environment
+Write-Step "Setting up Python virtual env (.venv)"
+if (-not (Test-Path ".venv")) {
+  Write-Host "Creating .venv..."
+  python -m venv .venv
 } else {
-    Write-Host "Creating virtual environment..."
-    python -m venv .venv
+  Write-Host ".venv already exists."
 }
 
-# Activate virtual environment
-Write-Host "Activating virtual environment..."
+Write-Host "Activating .venv..."
 & .\.venv\Scripts\Activate.ps1
 
-# Install dependencies
+# Upgrade pip (won't break lockfiles)
+try { python -m pip install --upgrade pip wheel setuptools --quiet } catch { }
+
+# 5) Python dependencies
+Write-Step "Installing requirements"
 if (Test-Path "requirements.txt") {
-    Write-Host "Installing Python dependencies..."
-    pip install -r requirements.txt
+  pip install -r requirements.txt
 } else {
-    Write-Host "requirements.txt not found. Please create it before running this script."
-    exit 1
+  Write-Host "requirements.txt not found. Skipping Python deps." -ForegroundColor Yellow
 }
 
-# ----------------------------------------
-# Temporal CLI Setup (fixed for ZIP asset)
-# ----------------------------------------
+# 6) Temporal CLI (preferred) with Docker fallback
+Write-Step "Configuring Temporal (CLI preferred, Docker as fallback)"
 
-$temporalInstallDir = "$env:USERPROFILE\.temporal"
-$temporalExe        = Join-Path $temporalInstallDir "temporal.exe"
-$temporalZip        = Join-Path $temporalInstallDir "temporal_windows_amd64.zip"
-$downloadUri        = "https://github.com/temporalio/cli/releases/latest/download/temporal_windows_amd64.zip"
+$temporalDir = Join-Path $env:USERPROFILE ".temporal"
+$temporalExe = Join-Path $temporalDir "temporal.exe"
+$temporalZip = Join-Path $temporalDir "temporal_windows.zip"
 
-function Test-ExeHeader([string]$path) {
-    if (-not (Test-Path $path)) { return $false }
-    try {
-        $fs = [System.IO.File]::OpenRead($path)
-        try {
-            $b0 = $fs.ReadByte(); $b1 = $fs.ReadByte()
-            return ($b0 -eq 0x4D -and $b1 -eq 0x5A) # "MZ"
-        } finally { $fs.Dispose() }
-    } catch { return $false }
-}
+# arch detect
+$arch = if ($env:PROCESSOR_ARCHITECTURE -match 'ARM64') { 'arm64' } else { 'amd64' }
+$cdn  = "https://temporal.download/cli/archive/latest?platform=windows&arch=$arch"
 
-# If temporal.exe already valid, just use it
-if (Test-ExeHeader $temporalExe) {
-    Write-Host "Temporal CLI already present at $temporalExe"
-    if ($env:Path -notmatch [regex]::Escape($temporalInstallDir)) {
-        $env:Path += ";$temporalInstallDir"
-    }
-}
-else {
-    Write-Host "Temporal CLI not found or invalid. Installing to $temporalInstallDir ..."
-
-    # Ensure folder exists and clean any bad leftovers
-    New-Item -ItemType Directory -Force -Path $temporalInstallDir | Out-Null
-    if (Test-Path $temporalExe) { Remove-Item $temporalExe -Force -ErrorAction SilentlyContinue }
-    if (Test-Path $temporalZip) { Remove-Item $temporalZip -Force -ErrorAction SilentlyContinue }
-
-    # Harden TLS just in case
-    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-
-    try {
-        Write-Host "Downloading: $downloadUri"
-        Invoke-WebRequest -Uri $downloadUri -OutFile $temporalZip -UseBasicParsing -ErrorAction Stop
-
-        if (-not (Test-Path $temporalZip)) {
-            Write-Host "Download failed: $temporalZip not found."
-            exit 1
-        }
-
-        Write-Host "Extracting to $temporalInstallDir ..."
-        Expand-Archive -Path $temporalZip -DestinationPath $temporalInstallDir -Force
-
-        # Some zips extract into a subfolder; try to locate the exe
-        if (-not (Test-Path $temporalExe)) {
-            $found = Get-ChildItem $temporalInstallDir -Recurse -Filter "temporal.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($found) {
-                Move-Item -Force $found.FullName $temporalExe
-            }
-        }
-
-        # Cleanup zip
-        Remove-Item $temporalZip -Force -ErrorAction SilentlyContinue
-
-        if (-not (Test-ExeHeader $temporalExe)) {
-            Write-Host "Install failed: temporal.exe missing or invalid after extraction."
-            exit 1
-        }
-
-        Write-Host "Temporal CLI installed successfully at $temporalExe"
-        if ($env:Path -notmatch [regex]::Escape($temporalInstallDir)) {
-            $env:Path += ";$temporalInstallDir"
-        }
-    }
-    catch {
-        Write-Host "Failed to install Temporal CLI: $($_.Exception.Message)"
-        exit 1
-    }
-}
-
-# Optional: quick version check
+$cliReady = $false
 try {
-    & $temporalExe --version
+  if (Test-ExeHeader $temporalExe) {
+    Write-Host "Temporal CLI already present at $temporalExe"
+    Ensure-Path $temporalDir
+    $cliReady = $true
+  } else {
+    Write-Host "Installing Temporal CLI to $temporalDir ..."
+    New-Item -ItemType Directory -Force -Path $temporalDir | Out-Null
+    Remove-Item $temporalZip -Force -ErrorAction SilentlyContinue
+    Remove-Item $temporalExe -Force -ErrorAction SilentlyContinue
+
+    $headers = @{ "User-Agent" = "PowerShellInvokeWebRequest" }
+    Invoke-WebRequest -Uri $cdn -OutFile $temporalZip -Headers $headers -MaximumRedirection 10 -UseBasicParsing
+
+    if (-not (Test-Path $temporalZip)) { throw "Download failed: $temporalZip not found." }
+
+    Expand-Archive -Path $temporalZip -DestinationPath $temporalDir -Force
+
+    # locate exe (zip may include a subfolder)
+    $found = Get-ChildItem $temporalDir -Recurse -Filter "temporal.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($found -and ($found.FullName -ne $temporalExe)) { Move-Item -Force $found.FullName $temporalExe }
+
+    Remove-Item $temporalZip -Force -ErrorAction SilentlyContinue
+
+    if (-not (Test-ExeHeader $temporalExe)) { throw "Temporal CLI missing or invalid after extraction." }
+
+    Ensure-Path $temporalDir
+    $cliReady = $true
+  }
 } catch {
-    Write-Host "Temporal CLI present but not runnable: $($_.Exception.Message)"
-    exit 1
+  Write-Host "⚠️  Temporal CLI install failed: $($_.Exception.Message)" -ForegroundColor Yellow
+  $cliReady = $false
 }
+
+# 7) Start Temporal (CLI or Docker)
+$usingDocker = $false
+if ($cliReady) {
+  Write-Host "Starting Temporal dev server via CLI ..."
+  try {
+    # Start in background (dev server: UI 8233, gRPC 7233)
+    Start-Process -FilePath $temporalExe -ArgumentList "server start-dev" -WindowStyle Hidden
+    $env:TEMPORAL_ADDRESS = "localhost:7233"
+  } catch {
+    Write-Host "⚠️  Failed to start Temporal via CLI: $($_.Exception.Message)" -ForegroundColor Yellow
+    $cliReady = $false
+  }
+}
+
+if (-not $cliReady) {
+  # Docker fallback
+  if (Get-Command docker -ErrorAction SilentlyContinue) {
+    Write-Host "Falling back to Docker: temporalio/auto-setup ..."
+    try {
+      docker rm -f temporal-dev 2>$null | Out-Null
+      docker run -d --name temporal-dev -p 7233:7233 -p 8233:8233 temporalio/auto-setup:latest | Out-Null
+      $env:TEMPORAL_ADDRESS = "localhost:7233"
+      $usingDocker = $true
+    } catch {
+      Write-Host "❌ Docker fallback failed: $($_.Exception.Message)"
+      Write-Host "Please ensure Docker Desktop is installed and running, or fix network access for CLI download." -ForegroundColor Yellow
+      throw
+    }
+  } else {
+    Write-Host "❌ Neither Temporal CLI installed nor Docker available. Please install Docker Desktop or allow CLI download."
+    throw "Temporal dev environment not available."
+  }
+}
+
+# 8) Smoke test (optional but helpful)
+Write-Step "Temporal readiness check"
+try {
+  if ($cliReady) {
+    & $temporalExe --version | Write-Host
+  }
+  # Quick port wait loop
+  $deadline = (Get-Date).AddSeconds(25)
+  $ready = $false
+  while ((Get-Date) -lt $deadline -and -not $ready) {
+    try {
+      $client = New-Object System.Net.Sockets.TcpClient
+      $iar = $client.BeginConnect('127.0.0.1', 7233, $null, $null)
+      $ok = $iar.AsyncWaitHandle.WaitOne(2000, $false)
+      if ($ok -and $client.Connected){ $ready=$true }
+      $client.Close()
+    } catch { Start-Sleep -Milliseconds 500 }
+    if (-not $ready) { Start-Sleep -Milliseconds 500 }
+  }
+  if ($ready) { Write-Host "✅ Temporal listening on 7233. UI on http://localhost:8233 (if CLI or Docker UI enabled)." -ForegroundColor Green }
+  else { Write-Host "⚠️ Temporal did not confirm by port check, but may still be starting. Continue if your app connects." -ForegroundColor Yellow }
+} catch {
+  Write-Host "⚠️ Temporal readiness check skipped: $($_.Exception.Message)" -ForegroundColor Yellow
+}
+
+Write-Step "Done"
+Write-Host "TEMPORAL_ADDRESS=$env:TEMPORAL_ADDRESS"
