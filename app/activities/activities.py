@@ -41,9 +41,7 @@ def log_event(db, order_id: str, event_type: str, payload: dict = None, ts=None)
         ts=ts or datetime.utcnow()
     ))
 
-# -------------------------------
-# Hedge-enabled activities
-# -------------------------------
+
 
 @activity.defn
 async def activity_order_received(order: "OrderData") -> dict:
@@ -158,10 +156,6 @@ async def activity_order_shipped(order: dict) -> str:
 
 
 
-# -------------------------------
-# Other activities unchanged
-# -------------------------------
-
 @activity.defn
 async def activity_manual_review(order: dict) -> None:
     logger.info(f"[Activity] manual_review started: {order['order_id']}")
@@ -232,7 +226,8 @@ async def activity_refund_payment(order: dict, reason: str) -> str:
         })
         db.commit()
         logger.info(f"[Activity] refund_payment: {order['order_id']} — ${-original_payment.amount} due to {reason}")
-        return f"Refund issued for order {order['order_id']} due to {reason}"
+        return f"Refund issued for order {order['order_id']} — amount ${original_payment.amount} due to {reason} . Run the DB dump check to view DB updates"
+
 
 @activity.defn
 async def activity_update_address(order: dict, new_address: dict) -> str:

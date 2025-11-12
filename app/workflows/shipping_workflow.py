@@ -74,10 +74,14 @@ class ShippingWorkflow:
 
         try:
             try:
+                if (res := await self._check_signal_result()):
+                    logger.info(f"[ShippingWorkflow] Signal intercepted — {res}")
+                    return res  
+              
                 await workflow.execute_activity(
                     activity_package_prepared,
                     args=[order],
-                    start_to_close_timeout=timedelta(seconds=0.000001),
+                    start_to_close_timeout=timedelta(seconds=0.0001),
                     retry_policy=FAST_RETRY_POLICY,
                     task_queue="shipping-tq",
                 )
@@ -93,7 +97,7 @@ class ShippingWorkflow:
                 await workflow.execute_activity(
                     activity_carrier_dispatched,
                     args=[order],
-                    start_to_close_timeout=timedelta(seconds=0.000001),
+                    start_to_close_timeout=timedelta(seconds=0.0001),
                     retry_policy=FAST_RETRY_POLICY,
                     task_queue="shipping-tq",
                 )
@@ -109,7 +113,7 @@ class ShippingWorkflow:
                 await workflow.execute_activity(
                     activity_order_shipped,
                     args=[order],
-                    start_to_close_timeout=timedelta(seconds=0.000001),
+                    start_to_close_timeout=timedelta(seconds=0.0001),
                     retry_policy=FAST_RETRY_POLICY,
                     task_queue="shipping-tq",
                 )

@@ -33,9 +33,9 @@ class ReturnWorkflow:
         current_state = state_result["state"]
         
 
-        if current_state not in ["dispatched", "delivered", "shipped"]:
-            self.logger.info(f"[ReturnWorkflow] return rejected: {order_id} not yet shipped or delivered")
-            return f"Return rejected: Order {order_id} not yet shipped or delivered"
+        if current_state not in [ "shipped"]:
+            self.logger.info(f"[ReturnWorkflow] return rejected: {order_id} not yet shipped ")
+            return f"Return rejected: Order {order_id} not yet shipped"
 
     
         simulated_order = {
@@ -51,5 +51,6 @@ class ReturnWorkflow:
             task_queue="order-tq"
         )
 
-        self.logger.info(f"[ReturnWorkflow] Return completed : {order_id} , View refund amount in the order worker")
-        return refund_result
+        # Log the actual result instead of a fixed message
+        self.logger.info(f"[ReturnWorkflow] {refund_result}")
+        return refund_result    

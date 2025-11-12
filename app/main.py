@@ -159,11 +159,11 @@ async def cancel_order(order_id: str = Body(...)):
         logger.info(f"[{order_id}] Cancel rejected — workflow already finished")
         return {"status": f"[{order_id}] Cancel rejected, order already shipped or workflow completed"}
 
-    # Send signal
+    
     await handle.signal(OrderWorkflow.cancel)
     logger.info(f"[{order_id}] Cancel signal sent")
 
-    # Check current stage
+    
     try:
         state = await activity_get_order_state(order_id)
         stage = state["state"]
