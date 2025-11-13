@@ -56,7 +56,7 @@ class SignalManager:
             self.logger.info(f"[SignalManager] cancel success: {order_id} canceled before payment")
             return f"Order {order_id} canceled before payment."
 
-        elif stage == "charged":
+        elif stage in ["charged", "package_prepared", "dispatched"]:
             await workflow.execute_activity(
                 activity_cancel_order,
                 asdict(order),
@@ -74,12 +74,11 @@ class SignalManager:
             self.logger.info(f"[SignalManager] cancel success: {order_id} canceled after payment, refund issued")
             return f"Order {order_id} canceled after payment. Refund issued."
 
-        elif stage in ["shipping", "package_prepared", "dispatched"]:
-            self.logger.info(f"[SignalManager] cancel rejected: {order_id} already in shipping")
-            return None
-
+        elif stage in ["shipping", "shipped"]:
+            self.logger.info(f"[SignalManager] cancel rejected: {order_id} already in stage '{stage}'")
+            return {"status": f"[{order_id}] Cancel rejected, order already {stage} or workflow completed"}
         else:
-            self.logger.warning(f"[SignalManager] cancel rejected: {order_id} unknown stage '{stage}'")
+            self.logger.warning(f"[SignalManager] cancel rejected: {order_id} :'{stage}'")
             return None
 
     async def _handle_address_update(self, order, new_address: dict, stage: str):
@@ -95,7 +94,14 @@ class SignalManager:
                 task_queue="order-tq"
             )
             self.logger.info(f"[SignalManager] address update success: {order_id} updated to {new_address}")
-        elif stage == "dispatched":
-            self.logger.info(f"[SignalManager] address update rejected: {order_id} already dispatched")
+        elif stage in ["dispatched", "shipping", "shipped"]:
+            self.logger.info(f"[SignalManager] address update rejected: {order_id} already in stage '{stage}'")
+            return {
+                "status": f"[{order_id}] Address update rejected, order already {stage} or workflow completed"
+            }
         else:
-            self.logger.warning(f"[SignalManager] address update rejected: {order_id} unknown stage '{stage}'")
+            self.logger.warning(f"[SignalManager] address update rejected: {order_id} : '{stage}'")
+            return {
+                "status": f"[{order_id}] Address update rejected, invalid stage '{stage}'"
+            }
+

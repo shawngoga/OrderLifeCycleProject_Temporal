@@ -1,6 +1,5 @@
 import logging
 logger = logging.getLogger("main")
-
 from datetime import timedelta
 from fastapi import FastAPI, HTTPException, Depends, Body
 from sqlalchemy.orm import Session
@@ -13,7 +12,7 @@ from app.db.session import SessionLocal
 from app.db.models import Order, Payment, Event
 from tabulate import tabulate
 from app.activities.activities import activity_get_order_state
-
+from app.activities.signals import SignalManager
 app = FastAPI()
 app.state.client = None
 
@@ -106,13 +105,25 @@ async def start_order(order: OrderInput, db: Session = Depends(get_db)):
     logger.info(f"[{order_id}] Workflow started")
     return {"workflow_id": order_id}
 
+from fastapi import Body
+from temporalio.client import WorkflowExecutionStatus
+import logging
+
+logger = logging.getLogger(__name__)
+
 @app.post("/update-address", tags=["Workflow"])
 async def update_address(order_id: str = Body(...), new_address: AddressInput = Body(...)):
     client = require_temporal()
     handle = client.get_workflow_handle(order_id)
 
-    # Check workflow execution status
-    desc = await handle.describe()
+    # Check if workflow exists
+    try:
+        desc = await handle.describe()
+    except Exception:
+        logger.info(f"[{order_id}] Address update rejected — workflow not found")
+        return {"status": f"[{order_id}] Address update rejected, order workflow completed or doesn't exist"}
+
+    # If workflow exists but is finished
     if desc.status in [
         WorkflowExecutionStatus.COMPLETED,
         WorkflowExecutionStatus.FAILED,
@@ -120,27 +131,16 @@ async def update_address(order_id: str = Body(...), new_address: AddressInput = 
         WorkflowExecutionStatus.TERMINATED,
     ]:
         logger.info(f"[{order_id}] Address update rejected — workflow already finished")
-        return {"status": f"[{order_id}] Address update rejected, order already shipped or workflow completed"}
+        return {"status": f"[{order_id}] Address update rejected, order workflow completed or doesn't exist"}
 
-    # Send signal
-    await handle.signal(OrderWorkflow.update_address, new_address.dict())
-    logger.info(f"[{order_id}] Address update signal sent")
-
-    # Check current stage
+    # Try sending signal
     try:
-        state = await activity_get_order_state(order_id)
-        stage = state["state"]
-
-        if stage in ["dispatched", "shipping", "shipped"]:
-            logger.info(f"[{order_id}] Address update rejected — stage is '{stage}'")
-            return {"status": f"[{order_id}] Address update signal sent, but rejected due to stage: '{stage}'"}
-        else:
-            logger.info(f"[{order_id}] Address update accepted — stage is '{stage}'")
-            return {"status": f"[{order_id}] Address update signal sent and accepted at stage: '{stage}'"}
-
+        await handle.signal("update_address", new_address.dict())
+        logger.info(f"[{order_id}] Address update signal sent")
+        return {"status": f"[{order_id}] Address update signal sent"}
     except Exception as e:
-        logger.warning(f"[{order_id}] Could not fetch stage after address update: {str(e)}")
-        return {"status": f"[{order_id}] Address update signal sent, but stage could not be verified"}
+        logger.warning(f"[{order_id}] Address update failed: {str(e)}")
+        return {"status": f"[{order_id}] Address update rejected, order workflow completed or doesn't exist"}
 
 
 
@@ -148,8 +148,15 @@ async def update_address(order_id: str = Body(...), new_address: AddressInput = 
 async def cancel_order(order_id: str = Body(...)):
     client = require_temporal()
     handle = client.get_workflow_handle(order_id)
-    
-    desc = await handle.describe()
+
+    # Check if workflow exists
+    try:
+        desc = await handle.describe()
+    except Exception:
+        logger.info(f"[{order_id}] Cancel rejected — workflow not found")
+        return {"status": f"[{order_id}] Cancel rejected, order workflow completed or doesn't exist"}
+
+    # If workflow exists but is finished
     if desc.status in [
         WorkflowExecutionStatus.COMPLETED,
         WorkflowExecutionStatus.FAILED,
@@ -157,27 +164,18 @@ async def cancel_order(order_id: str = Body(...)):
         WorkflowExecutionStatus.TERMINATED,
     ]:
         logger.info(f"[{order_id}] Cancel rejected — workflow already finished")
-        return {"status": f"[{order_id}] Cancel rejected, order already shipped or workflow completed"}
+        return {"status": f"[{order_id}] Cancel rejected, order workflow completed or doesn't exist"}
 
-    
-    await handle.signal(OrderWorkflow.cancel)
-    logger.info(f"[{order_id}] Cancel signal sent")
-
-    
+    # Try sending cancel signal
     try:
-        state = await activity_get_order_state(order_id)
-        stage = state["state"]
-
-        if stage in ["shipping", "shipped", "package_prepared", "dispatched"]:
-            logger.info(f"[{order_id}] Cancel signal rejected — stage is '{stage}'")
-            return {"status": f"[{order_id}] Cancel signal sent, but rejected due to stage: '{stage}'"}
-        else:
-            logger.info(f"[{order_id}] Cancel signal accepted — stage is '{stage}'")
-            return {"status": f"[{order_id}] Cancel signal sent and accepted at stage: '{stage}'"}
-
+        await handle.signal("cancel")
+        logger.info(f"[{order_id}] Cancel signal sent")
+        return {"status": f"[{order_id}] Cancel signal sent"}
     except Exception as e:
-        logger.warning(f"[{order_id}] Could not fetch stage after cancel signal: {str(e)}")
-        return {"status": f"[{order_id}] Cancel signal sent, but stage could not be verified"}
+        logger.warning(f"[{order_id}] Cancel failed: {str(e)}")
+        return {"status": f"[{order_id}] Cancel rejected, order workflow completed or doesn't exist"}
+
+
 
 @app.post("/return-order", tags=["Workflow"])
 async def start_return(order_id: str):
@@ -236,7 +234,7 @@ async def test_cancel_order():
         task_queue="order-tq",
         args=[order_id, address, items],
     )
-    delay = random.randint(1, 15)
+    delay = random.randint(1, 6)
     asyncio.create_task(delayed_signal_cancel(handle, delay))
     return {"workflow_id": order_id, "cancel_delay_seconds": delay}
 
@@ -257,7 +255,7 @@ async def test_update_address():
         task_queue="order-tq",
         args=[order_id, address, items],
     )
-    delay = random.randint(1, 15)
+    delay = random.randint(1, 6)
     asyncio.create_task(delayed_signal_update(handle, new_address, delay))
     return {"workflow_id": order_id, "update_delay_seconds": delay}
 
